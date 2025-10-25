@@ -4,10 +4,14 @@ from bs4 import BeautifulSoup
 import time
 import re
 
+# ==============================================================================
 # ----------------- 設定 -----------------
+# ==============================================================================
+
 # ログイン情報はStreamlit Secretsから取得
 # ⚠️ secrets.tomlに [showroom]login_id と [showroom]password が設定されている前提
 try:
+    # Streamlit Secretsからの読み込み
     SHOWROOM_LOGIN_ID = st.secrets["showroom"]["login_id"]
     SHOWROOM_PASSWORD = st.secrets["showroom"]["password"]
 except KeyError:
@@ -15,30 +19,44 @@ except KeyError:
     st.stop()
 
 BASE_URL = "https://www.showroom-live.com"
-LOGIN_URL = f"{BASE_URL}/login"
+# ログインフォームが埋め込まれているトップページを、トークン取得元とする
+LOGIN_PAGE_FOR_TOKEN = f"{BASE_URL}/" 
 LOGIN_POST_URL = f"{BASE_URL}/user/login" # HTMLから確定したPOST送信先
 ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer"
 APPROVE_ENDPOINT = f"{BASE_URL}/event/organizer_approve"
-CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック
+CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック (300秒 = 5分)
 # ----------------------------------------
 
+# ==============================================================================
+# ----------------- 認証・トークン取得関数 -----------------
+# ==============================================================================
+
 def get_csrf_token(session, url):
-    """指定URLにアクセスし、ページ内のCSRFトークンを取得する"""
-    r = session.get(url)
-    r.raise_for_status()
+    """指定URLにアクセスし、ログインフォーム内のCSRFトークンを取得する"""
+    st.info(f"トークン取得のため {url} にアクセス中...")
+    try:
+        r = session.get(url)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        st.error(f"トークン取得元のページ ({url}) へのアクセスに失敗しました: {e}")
+        return None
+
     soup = BeautifulSoup(r.text, 'html.parser')
     
+    # HTMLソースから確定したログインフォーム action="/user/login" を探す
+    login_form = soup.find('form', {'action': '/user/login'})
+    
+    if not login_form:
+        st.error("ログインフォーム action='/user/login' がページに見つかりません。")
+        return None
+
     # フォーム内の hidden input から CSRFトークンを取得
-    try:
-        # どのフォームでも同じトークンが使われるとは限らないため、特定のフォームを探す
-        csrf_input = soup.find('input', {'name': 'csrf_token'})
-        if csrf_input:
-            return csrf_input['value']
-        else:
-            # ページ全体にトークンがない場合、別の方法を探すかエラーとする
-            raise ValueError("CSRFトークンが見つかりません。")
-    except Exception as e:
-        st.error(f"ページ ({url}) からCSRFトークンを取得できませんでした: {e}")
+    csrf_input = login_form.find('input', {'name': 'csrf_token'})
+
+    if csrf_input and csrf_input.get('value'):
+        return csrf_input['value']
+    else:
+        st.error("ログインフォーム内のCSRFトークンが見つかりませんでした。")
         return None
 
 def login_and_get_session(login_id, password):
@@ -47,15 +65,12 @@ def login_and_get_session(login_id, password):
     session = requests.Session()
     
     try:
-        # 1. ログインページからCSRFトークンを取得
-        # 注意: ログインページにアクセスすると、ログインフォーム全体が表示されるとは限らないため、
-        # 別のページで取得できるトークンを使用するか、ログインフォームが表示されるページにアクセスする必要があります。
-        # ここでは、簡略化のため一旦ログインURLから取得を試みます。
-        login_csrf_token = get_csrf_token(session, LOGIN_URL)
+        # 1. トークンを取得 (トップページから)
+        login_csrf_token = get_csrf_token(session, LOGIN_PAGE_FOR_TOKEN)
         if not login_csrf_token:
             return None
 
-        # 2. ログイン情報をPOST送信 (HTMLソースより、name="account_id"とname="password"を使用)
+        # 2. ログイン情報をPOST送信 (account_idとpasswordはHTMLから確定)
         login_payload = {
             'account_id': login_id, 
             'password': password,
@@ -63,7 +78,8 @@ def login_and_get_session(login_id, password):
         }
         
         headers = {
-            'Referer': LOGIN_URL,
+            # 認証が成功しやすいよう、Refererをトークン取得元ページに設定
+            'Referer': LOGIN_PAGE_FOR_TOKEN, 
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
 
@@ -71,17 +87,17 @@ def login_and_get_session(login_id, password):
         r = session.post(LOGIN_POST_URL, data=login_payload, headers=headers, allow_redirects=True)
         r.raise_for_status()
 
-        # 3. ログイン成功の確認
-        # ログイン後、オーガナイザー管理ページにアクセスできれば成功と判断
+        # 3. ログイン成功の確認 (管理ページへのアクセス確認)
         r_admin = session.get(ORGANIZER_ADMIN_URL)
+        
+        # 承認管理ページにアクセスでき、かつページ内の特定テキストを確認
         if r_admin.status_code == 200 and "未承認のイベント参加申請" in r_admin.text:
             st.success("ログインに成功し、セッションが確立されました。")
             return session
         else:
-            st.error("ログインに失敗しました。ID、パスワード、またはログイン後のページ内容を確認してください。")
-            # ログイン失敗時のエラーメッセージがあればここでログに出力可能
-            if "ログインに失敗しました" in r.text or "ログインID" in r.text:
-                 st.error("認証情報に誤りがある可能性があります。")
+            st.error("ログインに失敗しました。認証情報、またはログイン後のリダイレクトを確認してください。")
+            if "ログインID" in r_admin.text or "ログインに失敗しました" in r.text:
+                 st.error("認証情報（ID/パスワード）に誤りがある可能性があります。")
             st.error(f"管理ページアクセス結果 (Status: {r_admin.status_code})")
             return None
             
@@ -91,6 +107,10 @@ def login_and_get_session(login_id, password):
     except Exception as e:
         st.error(f"ログイン処理中に予期せぬエラーが発生しました: {e}")
         return None
+
+# ==============================================================================
+# ----------------- イベント承認関数 -----------------
+# ==============================================================================
 
 def find_pending_approvals(session):
     """未承認のイベント参加申請を管理ページから抽出し、リストを返します。"""
@@ -152,14 +172,14 @@ def approve_entry(session, approval_data):
     }
     
     headers = {
-        'Referer': ORGANIZER_ADMIN_URL, # 承認ボタンを押したページのURLを設定
+        'Referer': ORGANIZER_ADMIN_URL, 
         'User-Agent': 'Mozilla/5.0'
     }
     
     st.info(f"承認リクエスト送信中: ルーム名: {approval_data['room_name']}")
     
     try:
-        # POST実行。承認成功すると通常は管理ページにリダイレクトされる
+        # POST実行
         r = session.post(APPROVE_ENDPOINT, data=payload, headers=headers, allow_redirects=True)
         r.raise_for_status()
 
@@ -175,7 +195,9 @@ def approve_entry(session, approval_data):
         st.error(f"承認リクエスト中にエラーが発生しました: {e}")
         return False
 
-# --- メイン関数 ---
+# ==============================================================================
+# ----------------- メイン関数 -----------------
+# ==============================================================================
 
 def main():
     st.title("SHOWROOM イベント参加申請 自動承認ツール (Requests版)")
@@ -190,11 +212,11 @@ def main():
     if not st.session_state.is_running:
         if col1.button("自動承認 ON (実行開始) 🚀", use_container_width=True):
             st.session_state.is_running = True
-            st.rerun() # ✅ 修正
+            st.rerun() # ✅ 修正済み
     else:
         if col2.button("自動承認 OFF (実行停止) 🛑", use_container_width=True):
             st.session_state.is_running = False
-            st.rerun() # ✅ 修正
+            st.rerun() # ✅ 修正済み
             
 
     if st.session_state.is_running:
@@ -216,30 +238,20 @@ def main():
                 st.markdown(f"---")
                 st.markdown(f"**最終チェック日時**: {time.strftime('%Y/%m/%d %H:%M:%S')}")
                 
-                # 2. 未承認イベントのリストを取得（この中でCSRFトークンも自動で取得される）
-                # 承認処理の度に管理ページがリロードされるため、ループで承認するのではなく、
-                # 1回のチェックで全ての未承認イベントを処理します。
+                # 2. 未承認イベントのリストを取得
                 pending_entries = find_pending_approvals(session)
                 
                 # 3. リストを順次承認
                 if pending_entries:
                     st.header(f"{len(pending_entries)}件の承認処理を開始...")
                     
-                    # 承認処理の直後にページがリダイレクト/リロードされるため、
-                    # 承認を連続で行う際は、処理の度に `find_pending_approvals` を実行する必要があります。
-                    # ここでは、シンプルさのために一括取得したリストで承認を試みますが、
-                    # 1件目の承認後に2件目以降がエラーになる場合は、`find_pending_approvals`をループ内に移動させてください。
-                    
                     entries_to_process = list(pending_entries)
                     
-                    while entries_to_process:
-                        entry = entries_to_process.pop(0) # 1件ずつ処理
+                    for entry in entries_to_process:
                         if approve_entry(session, entry):
                             approved_count += 1
-                            # 承認成功でページ内容が変わるため、処理が確実なようにセッションをリフレッシュ
-                            # → 承認後のリダイレクトでページはリフレッシュされているはずなので、次の承認に進む
                         
-                        # 承認後の処理が完了するのを待つためのウェイト
+                        # 承認後の処理が完了し、次の承認リクエストを間引くためのウェイト
                         time.sleep(3) 
 
                     st.success(f"✅ 今回のチェックで **{approved_count} 件** のイベント参加を承認しました。")
