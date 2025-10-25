@@ -57,10 +57,9 @@ def verify_session_and_get_csrf_token(session):
     """セッションの有効性を検証し、イベント管理ページからCSRFトークンを取得する"""
     st.info(f"セッション有効性を検証し、承認用トークンを取得します... (URL: {ORGANIZER_ADMIN_URL})")
     
-    # Refererをオーガナイザーのトップページに設定
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-        'Referer': ORGANIZER_TOP_URL, # 🚨 変更: RefererをTOPページに変更
+        'Referer': ORGANIZER_TOP_URL, # RefererをTOPページに設定
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
@@ -71,38 +70,45 @@ def verify_session_and_get_csrf_token(session):
         r = session.get(ORGANIZER_ADMIN_URL, headers=headers)
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
-        st.error(f"管理ページへのアクセスに失敗しました。Cookieが期限切れか、権限がありません: {e}")
+        st.error(f"管理ページへのアクセスに失敗しました。HTTPエラー: {e}")
         return None, None
 
     soup = BeautifulSoup(r.text, 'html.parser')
     
-    # 認証失敗の可能性をチェック
-    # ログインページの内容が含まれるか、リダイレクトされたかを確認
-    if "ログイン" in r.text or "会員登録" in r.text or ORGANIZER_TOP_URL != ORGANIZER_ADMIN_URL and r.url != ORGANIZER_ADMIN_URL:
-        st.error("🚨 Cookieが期限切れです。管理ページにアクセスできませんでした。新しいCookieを取得してください。")
-        st.markdown(f"**現在のURL:** `{r.url}`. 期待されるURL: `{ORGANIZER_ADMIN_URL}`.")
-        return None, None
-        
-    # 承認フォームからトークンを取得
-    approval_form = soup.find('form', {'action': '/event/organizer_approve'})
+    # 🚨 判定ロジックの変更: まずCSRFトークンを探し、認証が成功しているかチェックする
     
+    csrf_token = None
+    
+    # 1. 承認フォームからトークンを探す
+    approval_form = soup.find('form', {'action': '/event/organizer_approve'})
     if approval_form:
         csrf_input = approval_form.find('input', {'name': 'csrf_token'})
         if csrf_input and csrf_input.get('value'):
-            st.success("✅ 認証済みセッションが有効です。承認用CSRFトークンを取得しました。")
-            return session, csrf_input['value']
-        
-    csrf_input = soup.find('input', {'name': 'csrf_token'})
-    if csrf_input and csrf_input.get('value'):
-        st.warning("承認フォーム外からCSRFトークンを取得しました。")
-        return session, csrf_input['value']
-        
-    st.error("CSRFトークンを取得できませんでした。Webサイトの構造が変更された可能性があります。")
-    return None, None
+            csrf_token = csrf_input['value']
+    
+    # 2. フォームが見つからなくても、ページ全体からトークンを探す
+    if not csrf_token:
+        csrf_input = soup.find('input', {'name': 'csrf_token'})
+        if csrf_input and csrf_input.get('value'):
+            csrf_token = csrf_input['value']
+            
+    
+    if csrf_token:
+        # トークンが取得できれば、ページ自体は認証済みと判断
+        st.success("✅ 認証済みセッションが有効です。承認用CSRFトークンを取得しました。")
+        return session, csrf_token
+    else:
+        # 3. トークンが取得できなかった場合にのみ、ログイン関連のキーワードでエラー判定する
+        if "ログイン" in r.text or "会員登録" in r.text or "サインイン" in r.text:
+            st.error("🚨 Cookieが期限切れです。管理ページの内容がログインページのものと判定されました。新しいCookieを取得してください。")
+            return None, None
+            
+        st.error("🚨 予期せぬエラー: CSRFトークンを取得できませんでした。ログイン状態は不明です。Webサイトの構造が変更された可能性があります。")
+        return None, None
 
 
 # ==============================================================================
-# ----------------- イベント承認関数 (変更なし) -----------------
+# ----------------- イベント承認関数 -----------------
 # ==============================================================================
 
 def find_pending_approvals(session):
@@ -127,6 +133,7 @@ def find_pending_approvals(session):
     soup = BeautifulSoup(r.text, 'html.parser')
     pending_approvals = []
 
+    # CSRFトークンが取得できた＝認証済みの前提で、承認フォームを抽出する
     approval_forms = soup.find_all('form', {'action': '/event/organizer_approve'})
     
     if not approval_forms:
@@ -196,7 +203,7 @@ def approve_entry(session, approval_data):
         return False
 
 # ==============================================================================
-# ----------------- メイン関数 (変更なし) -----------------
+# ----------------- メイン関数 -----------------
 # ==============================================================================
 
 def main():
