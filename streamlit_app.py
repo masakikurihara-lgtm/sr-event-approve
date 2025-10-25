@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
+import datetime # JST時刻表示のため
 
 # ==============================================================================
 # ----------------- 設定 -----------------
@@ -10,6 +11,7 @@ import re
 
 try:
     # 認証済みCookie文字列をSecretsから取得
+    # StreamlitのサイドバーにあるSecrets.tomlファイルに認証情報を設定してください。
     AUTH_COOKIE_STRING = st.secrets["showroom"]["auth_cookie_string"]
 except KeyError:
     st.error("🚨 Streamlit Secretsの設定ファイル (.streamlit/secrets.toml) に 'showroom'セクション、または 'auth_cookie_string' が見つかりません。")
@@ -17,17 +19,20 @@ except KeyError:
     st.stop()
 
 BASE_URL = "https://www.showroom-live.com"
-# 申請イベントの確認ページ (未承認イベントのリスト取得に使用)
+# 申請イベントの確認ページ
 ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer" 
-# オーガナイザー管理画面のトップ (Refererやリダイレクトチェックに使用)
+# オーガナイザー管理画面のトップ
 ORGANIZER_TOP_URL = f"{BASE_URL}/organizer" 
 # 承認処理を行うPOSTエンドポイント
 APPROVE_ENDPOINT = f"{BASE_URL}/event/organizer_approve"
-CHECK_INTERVAL_SECONDS = 300  
+CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック
+
+# JSTタイムゾーン定義
+JST = datetime.timezone(datetime.timedelta(hours=9), 'JST') 
 # ----------------------------------------
 
 # ==============================================================================
-# ----------------- セッション構築関数 (言語設定Cookieを追加) -----------------
+# ----------------- セッション構築関数 -----------------
 # ==============================================================================
 
 def create_authenticated_session(cookie_string):
@@ -37,14 +42,13 @@ def create_authenticated_session(cookie_string):
     
     try:
         cookies_dict = {}
-        # Cookie文字列をrequestsのCookie Jarに直接解析して設定
         for item in cookie_string.split(';'):
             item = item.strip()
             if '=' in item:
                 name, value = item.split('=', 1)
                 cookies_dict[name.strip()] = value.strip()
         
-        # 🚨 修正: 言語設定Cookieを強制追加し、通知を日本語にする
+        # 🚨 日本語通知のための言語設定Cookieを強制追加
         cookies_dict['i18n_redirected'] = 'ja'
         
         if not cookies_dict:
@@ -59,17 +63,16 @@ def create_authenticated_session(cookie_string):
         return None
 
 # ==============================================================================
-# ----------------- セッション検証関数 (認証判定ロジックを強化) -----------------
+# ----------------- セッション検証関数 -----------------
 # ==============================================================================
 
 def verify_session_and_get_csrf_token(session):
     """セッションの有効性を検証し、イベント管理ページからCSRFトークンを取得する"""
     st.info(f"セッション有効性を検証し、承認用トークンを取得します... (URL: {ORGANIZER_ADMIN_URL})")
     
-    # ブラウザに近いヘッダーを設定
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-        'Referer': ORGANIZER_TOP_URL, # RefererをオーガナイザーTOPページに設定
+        'Referer': ORGANIZER_TOP_URL, 
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
@@ -85,16 +88,16 @@ def verify_session_and_get_csrf_token(session):
 
     soup = BeautifulSoup(r.text, 'html.parser')
     
-    # 認証判定ロジック: トークンが見つかるか、またはログインページへの誘導がないかをチェック
     csrf_token = None
     
-    # 1. 承認フォームまたはページ全体からCSRFトークンを探す
+    # 承認フォームからCSRFトークンを探す
     approval_form = soup.find('form', {'action': '/event/organizer_approve'})
     if approval_form:
         csrf_input = approval_form.find('input', {'name': 'csrf_token'})
         if csrf_input and csrf_input.get('value'):
             csrf_token = csrf_input['value']
     
+    # ページ全体からも探す（念のため）
     if not csrf_token:
         csrf_input = soup.find('input', {'name': 'csrf_token'})
         if csrf_input and csrf_input.get('value'):
@@ -102,11 +105,10 @@ def verify_session_and_get_csrf_token(session):
             
     
     if csrf_token:
-        # トークンが取得できれば、ページ自体は認証済みと判断
         st.success("✅ 認証済みセッションが有効です。承認用CSRFトークンを取得しました。")
         return session, csrf_token
     else:
-        # トークンが取得できなかった場合に、ログイン関連のキーワードでエラー判定
+        # ログイン関連のキーワードでエラー判定
         if "ログイン" in r.text or "会員登録" in r.text or "サインイン" in r.text:
             st.error("🚨 Cookieが期限切れです。管理ページの内容がログインページのものと判定されました。新しいCookieを取得してください。")
             return None, None
@@ -115,7 +117,7 @@ def verify_session_and_get_csrf_token(session):
         return None, None
 
 # ==============================================================================
-# ----------------- イベント承認関数 (成功判定を修正) -----------------
+# ----------------- イベント承認関数 -----------------
 # ==============================================================================
 
 def find_pending_approvals(session):
@@ -154,6 +156,7 @@ def find_pending_approvals(session):
             room_id = form.find('input', {'name': 'room_id'})['value']
             event_id = form.find('input', {'name': 'event_id'})['value']
             
+            # 親要素の<tr>タグからルーム名、イベント名を取得
             tr_tag = form.find_parent('tr')
             room_name_tag = tr_tag.find('a', href=re.compile(r'/room/profile\?room_id='))
             event_name_tag = tr_tag.find('a', href=re.compile(r'/event/'))
@@ -182,7 +185,7 @@ def approve_entry(session, approval_data):
         'event_id': approval_data['event_id'],
     }
     
-    # 承認リクエストがAjaxであることを想定したヘッダー
+    # Ajaxリクエストと日本語設定を強制するためのヘッダー
     headers = {
         'Referer': ORGANIZER_ADMIN_URL, 
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
@@ -190,17 +193,16 @@ def approve_entry(session, approval_data):
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8', # 🚨 日本語設定を確実に送信
     }
     
     st.info(f"承認リクエスト送信中: ルーム名: {approval_data['room_name']}")
     
     try:
-        # allow_redirects=Trueはそのまま維持
         r = session.post(APPROVE_ENDPOINT, data=payload, headers=headers, allow_redirects=True)
         r.raise_for_status()
 
-        # 🚨 修正: 承認成功の条件に、POSTリクエストの終点URL自体を追加
-        # (Ajaxでリダイレクトなしで200 OKが返るケースに対応)
+        # 承認成功の判定ロジック: リダイレクト先またはPOSTエンドポイント自体に留まった場合を成功とする
         if ORGANIZER_ADMIN_URL in r.url or ORGANIZER_TOP_URL in r.url or APPROVE_ENDPOINT in r.url:
              st.success(f"✅ 承認成功: ルームID {approval_data['room_id']} / イベントID {approval_data['event_id']}")
              return True
@@ -239,10 +241,8 @@ def main():
     if st.session_state.is_running:
         st.success("⚙️ 自動承認を起動しました。このアプリを閉じると停止します。")
         
-        # 1. ログインセッションの確立 (言語設定を含む)
         session = create_authenticated_session(AUTH_COOKIE_STRING)
         
-        # 2. セッションの有効性を確認 (ログインチェックとCSRFトークンの取得)
         valid_session, initial_csrf_token = verify_session_and_get_csrf_token(session)
         
         if not valid_session:
@@ -257,29 +257,33 @@ def main():
             
             with placeholder.container():
                 st.markdown(f"---")
-                st.markdown(f"**最終チェック日時**: {time.strftime('%Y/%m/%d %H:%M:%S')}")
+                # 🚨 修正済み: 日本時間 (JST) で日時を表示
+                now_jst = datetime.datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')
+                st.markdown(f"**最終チェック日時**: {now_jst}")
                 
-                # 3. 未承認イベントのリストを取得
+                # 未承認イベントのリストを取得
                 pending_entries = find_pending_approvals(session)
                 
-                # 4. リストを順次承認
+                # 承認処理ブロック: リストが空でない場合のみ実行
                 if pending_entries:
                     st.header(f"{len(pending_entries)}件の承認処理を開始...")
                     
                     entries_to_process = list(pending_entries)
                     
                     for entry in entries_to_process:
+                        # 承認処理
                         if approve_entry(session, entry):
                             approved_count += 1
                         
-                        time.sleep(3) 
+                        time.sleep(3) # 連続リクエストを避けるための待機
 
                     st.success(f"✅ 今回のチェックで **{approved_count} 件** のイベント参加を承認しました。")
                 else:
                     st.info("未承認イベントはありませんでした。")
+                    # approved_count は 0 のまま
 
             
-            # 次のチェックまでの待機
+            # 次のチェックまでの待機時間計算
             elapsed_time = time.time() - start_time
             wait_time = max(0, CHECK_INTERVAL_SECONDS - elapsed_time)
             
