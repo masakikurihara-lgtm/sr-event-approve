@@ -1,3 +1,6 @@
 streamlit
 requests
 beautifulsoup4
+# 追加
+selenium
+webdriver-manager # (あるいは、Streamlit Cloudに対応したPlaywright)
