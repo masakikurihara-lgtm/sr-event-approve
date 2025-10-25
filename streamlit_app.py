@@ -190,11 +190,11 @@ def main():
     if not st.session_state.is_running:
         if col1.button("自動承認 ON (実行開始) 🚀", use_container_width=True):
             st.session_state.is_running = True
-            st.experimental_rerun()
+            st.rerun() # ✅ 修正
     else:
         if col2.button("自動承認 OFF (実行停止) 🛑", use_container_width=True):
             st.session_state.is_running = False
-            st.experimental_rerun()
+            st.rerun() # ✅ 修正
             
 
     if st.session_state.is_running:
