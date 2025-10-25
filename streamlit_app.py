@@ -16,9 +16,9 @@ except KeyError:
     st.stop()
 
 BASE_URL = "https://www.showroom-live.com"
-# 🚨 修正: 申請イベントの確認ページ
+# 申請イベントの確認ページ
 ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer" 
-# 🚨 新規追加: オーガナイザー管理画面のトップ (承認後のリダイレクト確認用など)
+# オーガナイザー管理画面のトップ
 ORGANIZER_TOP_URL = f"{BASE_URL}/organizer" 
 APPROVE_ENDPOINT = f"{BASE_URL}/event/organizer_approve"
 CHECK_INTERVAL_SECONDS = 300  
@@ -57,10 +57,10 @@ def verify_session_and_get_csrf_token(session):
     """セッションの有効性を検証し、イベント管理ページからCSRFトークンを取得する"""
     st.info(f"セッション有効性を検証し、承認用トークンを取得します... (URL: {ORGANIZER_ADMIN_URL})")
     
-    # ブラウザに近いヘッダーを設定
+    # Refererをオーガナイザーのトップページに設定
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-        'Referer': BASE_URL + '/', 
+        'Referer': ORGANIZER_TOP_URL, # 🚨 変更: RefererをTOPページに変更
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
@@ -68,7 +68,6 @@ def verify_session_and_get_csrf_token(session):
     }
     
     try:
-        # 申請イベント確認ページにアクセス
         r = session.get(ORGANIZER_ADMIN_URL, headers=headers)
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
@@ -77,9 +76,11 @@ def verify_session_and_get_csrf_token(session):
 
     soup = BeautifulSoup(r.text, 'html.parser')
     
-    # 認証失敗の可能性をチェック (リダイレクトや未承認時のページ内容をチェック)
-    if "ログイン" in r.text or "会員登録" in r.text or ORGANIZER_TOP_URL == r.url:
+    # 認証失敗の可能性をチェック
+    # ログインページの内容が含まれるか、リダイレクトされたかを確認
+    if "ログイン" in r.text or "会員登録" in r.text or ORGANIZER_TOP_URL != ORGANIZER_ADMIN_URL and r.url != ORGANIZER_ADMIN_URL:
         st.error("🚨 Cookieが期限切れです。管理ページにアクセスできませんでした。新しいCookieを取得してください。")
+        st.markdown(f"**現在のURL:** `{r.url}`. 期待されるURL: `{ORGANIZER_ADMIN_URL}`.")
         return None, None
         
     # 承認フォームからトークンを取得
@@ -91,7 +92,6 @@ def verify_session_and_get_csrf_token(session):
             st.success("✅ 認証済みセッションが有効です。承認用CSRFトークンを取得しました。")
             return session, csrf_input['value']
         
-    # 承認フォームがない場合でも、他の場所からトークンを探す
     csrf_input = soup.find('input', {'name': 'csrf_token'})
     if csrf_input and csrf_input.get('value'):
         st.warning("承認フォーム外からCSRFトークンを取得しました。")
@@ -102,7 +102,7 @@ def verify_session_and_get_csrf_token(session):
 
 
 # ==============================================================================
-# ----------------- イベント承認関数 -----------------
+# ----------------- イベント承認関数 (変更なし) -----------------
 # ==============================================================================
 
 def find_pending_approvals(session):
@@ -184,7 +184,6 @@ def approve_entry(session, approval_data):
         r = session.post(APPROVE_ENDPOINT, data=payload, headers=headers, allow_redirects=True)
         r.raise_for_status()
 
-        # 🚨 修正: 承認成功後のリダイレクト先として、確認ページかトップページかをチェック
         if ORGANIZER_ADMIN_URL in r.url or ORGANIZER_TOP_URL in r.url:
              st.success(f"✅ 承認成功: ルームID {approval_data['room_id']} / イベントID {approval_data['event_id']}")
              return True
@@ -197,7 +196,7 @@ def approve_entry(session, approval_data):
         return False
 
 # ==============================================================================
-# ----------------- メイン関数 -----------------
+# ----------------- メイン関数 (変更なし) -----------------
 # ==============================================================================
 
 def main():
