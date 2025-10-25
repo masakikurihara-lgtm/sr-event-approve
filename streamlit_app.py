@@ -9,9 +9,7 @@ import re
 # ==============================================================================
 
 # ログイン情報はStreamlit Secretsから取得
-# ⚠️ secrets.tomlに [showroom]login_id と [showroom]password が設定されている前提
 try:
-    # Streamlit Secretsからの読み込み
     SHOWROOM_LOGIN_ID = st.secrets["showroom"]["login_id"]
     SHOWROOM_PASSWORD = st.secrets["showroom"]["password"]
 except KeyError:
@@ -19,7 +17,6 @@ except KeyError:
     st.stop()
 
 BASE_URL = "https://www.showroom-live.com"
-# ログインフォームが埋め込まれているトップページを、トークン取得元とする
 LOGIN_PAGE_FOR_TOKEN = f"{BASE_URL}/" 
 LOGIN_POST_URL = f"{BASE_URL}/user/login" # HTMLから確定したPOST送信先
 ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer"
@@ -43,7 +40,7 @@ def get_csrf_token(session, url):
 
     soup = BeautifulSoup(r.text, 'html.parser')
     
-    # HTMLソースから確定したログインフォーム action="/user/login" を探す
+    # ログインフォーム action="/user/login" を探す
     login_form = soup.find('form', {'action': '/user/login'})
     
     if not login_form:
@@ -70,7 +67,7 @@ def login_and_get_session(login_id, password):
         if not login_csrf_token:
             return None
 
-        # 2. ログイン情報をPOST送信 (account_idとpasswordはHTMLから確定)
+        # 2. ログイン情報をPOST送信
         login_payload = {
             'account_id': login_id, 
             'password': password,
@@ -78,26 +75,28 @@ def login_and_get_session(login_id, password):
         }
         
         headers = {
-            # 認証が成功しやすいよう、Refererをトークン取得元ページに設定
             'Referer': LOGIN_PAGE_FOR_TOKEN, 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            # 認証成功の確度を上げるために、Ajaxリクエストヘッダーを追加
+            'X-Requested-With': 'XMLHttpRequest' 
         }
 
         # POST実行
         r = session.post(LOGIN_POST_URL, data=login_payload, headers=headers, allow_redirects=True)
         r.raise_for_status()
 
-        # 3. ログイン成功の確認 (管理ページへのアクセス確認)
+        # 3. ログイン成功の確認
         r_admin = session.get(ORGANIZER_ADMIN_URL)
         
-        # 承認管理ページにアクセスでき、かつページ内の特定テキストを確認
+        # 承認管理ページにアクセスし、ページ内に「未承認のイベント参加申請」が含まれているか確認
         if r_admin.status_code == 200 and "未承認のイベント参加申請" in r_admin.text:
             st.success("ログインに成功し、セッションが確立されました。")
             return session
         else:
-            st.error("ログインに失敗しました。認証情報、またはログイン後のリダイレクトを確認してください。")
-            if "ログインID" in r_admin.text or "ログインに失敗しました" in r.text:
-                 st.error("認証情報（ID/パスワード）に誤りがある可能性があります。")
+            # ログイン失敗の原因を詳細に表示
+            st.error("ログインに失敗しました。認証情報、またはWebサイトの構造を確認してください。")
+            if "ログインID" in r_admin.text or "ログインに失敗しました" in r.text or "ログイン" in r_admin.text:
+                 st.error("管理ページにアクセスしましたが、ログインが必要なコンテンツ（「ログイン」など）が表示されたため、セッションが確立できていません。ID/パスワードを確認してください。")
             st.error(f"管理ページアクセス結果 (Status: {r_admin.status_code})")
             return None
             
@@ -109,7 +108,7 @@ def login_and_get_session(login_id, password):
         return None
 
 # ==============================================================================
-# ----------------- イベント承認関数 -----------------
+# ----------------- イベント承認関数 (変更なし) -----------------
 # ==============================================================================
 
 def find_pending_approvals(session):
@@ -196,7 +195,7 @@ def approve_entry(session, approval_data):
         return False
 
 # ==============================================================================
-# ----------------- メイン関数 -----------------
+# ----------------- メイン関数 (st.rerun()修正済み) -----------------
 # ==============================================================================
 
 def main():
@@ -212,11 +211,11 @@ def main():
     if not st.session_state.is_running:
         if col1.button("自動承認 ON (実行開始) 🚀", use_container_width=True):
             st.session_state.is_running = True
-            st.rerun() # ✅ 修正済み
+            st.rerun() 
     else:
         if col2.button("自動承認 OFF (実行停止) 🛑", use_container_width=True):
             st.session_state.is_running = False
-            st.rerun() # ✅ 修正済み
+            st.rerun() 
             
 
     if st.session_state.is_running:
