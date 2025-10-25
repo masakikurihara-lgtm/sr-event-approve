@@ -3,14 +3,12 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
-from http.cookies import SimpleCookie
 
 # ==============================================================================
 # ----------------- 設定 -----------------
 # ==============================================================================
 
 try:
-    # 認証済みCookie文字列をSecretsから取得
     AUTH_COOKIE_STRING = st.secrets["showroom"]["auth_cookie_string"]
 except KeyError:
     st.error("🚨 Streamlit Secretsの設定ファイル (.streamlit/secrets.toml) に 'showroom'セクション、または 'auth_cookie_string' が見つかりません。")
@@ -18,9 +16,12 @@ except KeyError:
     st.stop()
 
 BASE_URL = "https://www.showroom-live.com"
-ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer"
+# 🚨 修正: 申請イベントの確認ページ
+ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer" 
+# 🚨 新規追加: オーガナイザー管理画面のトップ (承認後のリダイレクト確認用など)
+ORGANIZER_TOP_URL = f"{BASE_URL}/organizer" 
 APPROVE_ENDPOINT = f"{BASE_URL}/event/organizer_approve"
-CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック (300秒 = 5分)
+CHECK_INTERVAL_SECONDS = 300  
 # ----------------------------------------
 
 # ==============================================================================
@@ -32,22 +33,43 @@ def create_authenticated_session(cookie_string):
     st.info("手動設定されたCookieを使用して認証セッションを構築します...")
     session = requests.Session()
     
-    # Cookie文字列を解析し、セッションに設定
-    simple_cookie = SimpleCookie()
-    simple_cookie.load(cookie_string)
-    
-    # SimpleCookieをRequestsのCookie Jar形式に変換
-    cookies_dict = {name: morsel.value for name, morsel in simple_cookie.items()}
-    session.cookies.update(cookies_dict)
-    
-    return session
-
+    try:
+        cookies_dict = {}
+        # Cookie文字列をrequestsのCookie Jarに直接解析して設定
+        for item in cookie_string.split(';'):
+            item = item.strip()
+            if '=' in item:
+                name, value = item.split('=', 1)
+                cookies_dict[name.strip()] = value.strip()
+        
+        if not cookies_dict:
+             st.error("🚨 Cookie文字列から有効なCookieを解析できませんでした。")
+             return None
+             
+        session.cookies.update(cookies_dict)
+        return session
+        
+    except Exception as e:
+        st.error(f"Cookie解析中にエラーが発生しました: {e}")
+        return None
 
 def verify_session_and_get_csrf_token(session):
     """セッションの有効性を検証し、イベント管理ページからCSRFトークンを取得する"""
-    st.info("セッション有効性を検証し、承認用トークンを取得します...")
+    st.info(f"セッション有効性を検証し、承認用トークンを取得します... (URL: {ORGANIZER_ADMIN_URL})")
+    
+    # ブラウザに近いヘッダーを設定
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'Referer': BASE_URL + '/', 
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+        'Cache-Control': 'max-age=0'
+    }
+    
     try:
-        r = session.get(ORGANIZER_ADMIN_URL)
+        # 申請イベント確認ページにアクセス
+        r = session.get(ORGANIZER_ADMIN_URL, headers=headers)
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
         st.error(f"管理ページへのアクセスに失敗しました。Cookieが期限切れか、権限がありません: {e}")
@@ -55,16 +77,12 @@ def verify_session_and_get_csrf_token(session):
 
     soup = BeautifulSoup(r.text, 'html.parser')
     
-    # 認証失敗の可能性をチェック
-    if "ログイン" in r.text or "会員登録" in r.text:
+    # 認証失敗の可能性をチェック (リダイレクトや未承認時のページ内容をチェック)
+    if "ログイン" in r.text or "会員登録" in r.text or ORGANIZER_TOP_URL == r.url:
         st.error("🚨 Cookieが期限切れです。管理ページにアクセスできませんでした。新しいCookieを取得してください。")
         return None, None
         
-    if "未承認のイベント参加申請" not in r.text:
-         st.warning("⚠️ 管理ページにアクセスできましたが、「未承認のイベント参加申請」が見つかりません。オーガナイザー権限やCookieを確認してください。")
-         # 承認フォームは存在するため、トークンだけは取得を試みる
-    
-    # 承認フォーム（actionが '/event/organizer_approve'）からトークンを取得
+    # 承認フォームからトークンを取得
     approval_form = soup.find('form', {'action': '/event/organizer_approve'})
     
     if approval_form:
@@ -72,8 +90,8 @@ def verify_session_and_get_csrf_token(session):
         if csrf_input and csrf_input.get('value'):
             st.success("✅ 認証済みセッションが有効です。承認用CSRFトークンを取得しました。")
             return session, csrf_input['value']
-    
-    # 承認フォームがなくても、ページ全体からトークンを探す（念のため）
+        
+    # 承認フォームがない場合でも、他の場所からトークンを探す
     csrf_input = soup.find('input', {'name': 'csrf_token'})
     if csrf_input and csrf_input.get('value'):
         st.warning("承認フォーム外からCSRFトークンを取得しました。")
@@ -84,18 +102,23 @@ def verify_session_and_get_csrf_token(session):
 
 
 # ==============================================================================
-# ----------------- イベント承認関数 (トークン取得ロジックを変更) -----------------
+# ----------------- イベント承認関数 -----------------
 # ==============================================================================
-
-# **注意:** この関数は、メインループ内でセッションの再構築を行わないため、
-# トークンはメインループの度に取得するようにロジックを修正する必要があります。
 
 def find_pending_approvals(session):
     """未承認のイベント参加申請を管理ページから抽出し、リストを返します。"""
-    st.info("オーガナイザー管理ページにアクセスし、未承認イベントを探します...")
+    st.info("申請イベントの確認ページにアクセスし、未承認イベントを探します...")
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'Referer': ORGANIZER_TOP_URL, 
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+    }
     
     try:
-        r = session.get(ORGANIZER_ADMIN_URL)
+        r = session.get(ORGANIZER_ADMIN_URL, headers=headers)
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
         st.error(f"管理ページへのアクセスに失敗しました: {e}")
@@ -104,7 +127,6 @@ def find_pending_approvals(session):
     soup = BeautifulSoup(r.text, 'html.parser')
     pending_approvals = []
 
-    # 未承認イベントの承認フォーム（actionが '/event/organizer_approve'）を全て探す
     approval_forms = soup.find_all('form', {'action': '/event/organizer_approve'})
     
     if not approval_forms:
@@ -115,13 +137,10 @@ def find_pending_approvals(session):
 
     for form in approval_forms:
         try:
-            # フォーム内の hidden input から room_id, event_id, csrf_token を抽出
-            # **注意:** このトークンは、そのフォーム専用である可能性があるため、ループ内で取得します。
             csrf_token = form.find('input', {'name': 'csrf_token'})['value']
             room_id = form.find('input', {'name': 'room_id'})['value']
             event_id = form.find('input', {'name': 'event_id'})['value']
             
-            # ログ表示のためのルーム名とイベント名を取得 (変更なし)
             tr_tag = form.find_parent('tr')
             room_name_tag = tr_tag.find('a', href=re.compile(r'/room/profile\?room_id='))
             event_name_tag = tr_tag.find('a', href=re.compile(r'/event/'))
@@ -152,18 +171,21 @@ def approve_entry(session, approval_data):
     
     headers = {
         'Referer': ORGANIZER_ADMIN_URL, 
-        'User-Agent': 'Mozilla/5.0'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest', 
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate, br',
     }
     
     st.info(f"承認リクエスト送信中: ルーム名: {approval_data['room_name']}")
     
     try:
-        # POST実行
         r = session.post(APPROVE_ENDPOINT, data=payload, headers=headers, allow_redirects=True)
         r.raise_for_status()
 
-        # 承認後のページが元の管理ページに戻っていれば成功と判断
-        if ORGANIZER_ADMIN_URL in r.url:
+        # 🚨 修正: 承認成功後のリダイレクト先として、確認ページかトップページかをチェック
+        if ORGANIZER_ADMIN_URL in r.url or ORGANIZER_TOP_URL in r.url:
              st.success(f"✅ 承認成功: ルームID {approval_data['room_id']} / イベントID {approval_data['event_id']}")
              return True
         else:
@@ -180,7 +202,7 @@ def approve_entry(session, approval_data):
 
 def main():
     st.title("SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)")
-    st.markdown("⚠️ **注意**: このツールは、**Secretsに設定されたCookieが有効な間のみ**動作します。Cookieが切れると停止します。")
+    st.markdown("⚠️ **注意**: このツールは、**Secretsに設定されたCookieが有効な間のみ**動作します。")
     st.markdown("---")
     
     if 'is_running' not in st.session_state:
@@ -201,11 +223,8 @@ def main():
     if st.session_state.is_running:
         st.success("⚙️ 自動承認を起動しました。このアプリを閉じると停止します。")
         
-        # 1. ログインセッションの確立 (Cookieベース)
         session = create_authenticated_session(AUTH_COOKIE_STRING)
         
-        # 2. セッションの有効性を確認 (ログインチェックとCSRFトークンの取得)
-        # Note: CSRFトークンは承認フォーム毎に取得するため、ここではセッションの有効性確認に留めます
         valid_session, initial_csrf_token = verify_session_and_get_csrf_token(session)
         
         if not valid_session:
@@ -222,10 +241,8 @@ def main():
                 st.markdown(f"---")
                 st.markdown(f"**最終チェック日時**: {time.strftime('%Y/%m/%d %H:%M:%S')}")
                 
-                # 3. 未承認イベントのリストを取得
                 pending_entries = find_pending_approvals(session)
                 
-                # 4. リストを順次承認
                 if pending_entries:
                     st.header(f"{len(pending_entries)}件の承認処理を開始...")
                     
@@ -235,7 +252,6 @@ def main():
                         if approve_entry(session, entry):
                             approved_count += 1
                         
-                        # 承認後の処理が完了するのを待つためのウェイト
                         time.sleep(3) 
 
                     st.success(f"✅ 今回のチェックで **{approved_count} 件** のイベント参加を承認しました。")
@@ -243,7 +259,6 @@ def main():
                     st.info("未承認イベントはありませんでした。")
 
             
-            # 次のチェックまでの待機
             elapsed_time = time.time() - start_time
             wait_time = max(0, CHECK_INTERVAL_SECONDS - elapsed_time)
             
