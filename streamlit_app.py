@@ -3,15 +3,13 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
-import datetime # JST時刻表示のため
+import datetime 
 
 # ==============================================================================
 # ----------------- 設定 -----------------
 # ==============================================================================
 
 try:
-    # 認証済みCookie文字列をSecretsから取得
-    # StreamlitのサイドバーにあるSecrets.tomlファイルに認証情報を設定してください。
     AUTH_COOKIE_STRING = st.secrets["showroom"]["auth_cookie_string"]
 except KeyError:
     st.error("🚨 Streamlit Secretsの設定ファイル (.streamlit/secrets.toml) に 'showroom'セクション、または 'auth_cookie_string' が見つかりません。")
@@ -19,17 +17,13 @@ except KeyError:
     st.stop()
 
 BASE_URL = "https://www.showroom-live.com"
-# 申請イベントの確認ページ
 ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer" 
-# オーガナイザー管理画面のトップ
 ORGANIZER_TOP_URL = f"{BASE_URL}/organizer" 
-# 承認処理を行うPOSTエンドポイント
 APPROVE_ENDPOINT = f"{BASE_URL}/event/organizer_approve"
-CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック
+CHECK_INTERVAL_SECONDS = 300  
 
 # JSTタイムゾーン定義
 JST = datetime.timezone(datetime.timedelta(hours=9), 'JST') 
-# ----------------------------------------
 
 # ==============================================================================
 # ----------------- セッション構築関数 -----------------
@@ -48,7 +42,6 @@ def create_authenticated_session(cookie_string):
                 name, value = item.split('=', 1)
                 cookies_dict[name.strip()] = value.strip()
         
-        # 🚨 日本語通知のための言語設定Cookieを強制追加
         cookies_dict['i18n_redirected'] = 'ja'
         
         if not cookies_dict:
@@ -90,14 +83,12 @@ def verify_session_and_get_csrf_token(session):
     
     csrf_token = None
     
-    # 承認フォームからCSRFトークンを探す
     approval_form = soup.find('form', {'action': '/event/organizer_approve'})
     if approval_form:
         csrf_input = approval_form.find('input', {'name': 'csrf_token'})
         if csrf_input and csrf_input.get('value'):
             csrf_token = csrf_input['value']
     
-    # ページ全体からも探す（念のため）
     if not csrf_token:
         csrf_input = soup.find('input', {'name': 'csrf_token'})
         if csrf_input and csrf_input.get('value'):
@@ -108,7 +99,6 @@ def verify_session_and_get_csrf_token(session):
         st.success("✅ 認証済みセッションが有効です。承認用CSRFトークンを取得しました。")
         return session, csrf_token
     else:
-        # ログイン関連のキーワードでエラー判定
         if "ログイン" in r.text or "会員登録" in r.text or "サインイン" in r.text:
             st.error("🚨 Cookieが期限切れです。管理ページの内容がログインページのものと判定されました。新しいCookieを取得してください。")
             return None, None
@@ -122,7 +112,7 @@ def verify_session_and_get_csrf_token(session):
 
 def find_pending_approvals(session):
     """未承認のイベント参加申請を管理ページから抽出し、リストを返します。"""
-    st.info("申請イベントの確認ページにアクセスし、未承認イベントを探します...")
+    st.info("申請イベントの確認ページにアクセスし、未承認イベントを探します...") # ログは残す
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
@@ -145,10 +135,10 @@ def find_pending_approvals(session):
     approval_forms = soup.find_all('form', {'action': '/event/organizer_approve'})
     
     if not approval_forms:
-        st.info("未承認のイベント参加申請は見つかりませんでした。")
+        # st.info("未承認のイベント参加申請は見つかりませんでした。") # ログはメイン関数に任せる
         return []
 
-    st.warning(f"🚨 {len(approval_forms)} 件の未承認イベント参加申請が見つかりました。")
+    # st.warning(f"🚨 {len(approval_forms)} 件の未承認イベント参加申請が見つかりました。") # ログはメイン関数に任せる
 
     for form in approval_forms:
         try:
@@ -156,7 +146,6 @@ def find_pending_approvals(session):
             room_id = form.find('input', {'name': 'room_id'})['value']
             event_id = form.find('input', {'name': 'event_id'})['value']
             
-            # 親要素の<tr>タグからルーム名、イベント名を取得
             tr_tag = form.find_parent('tr')
             room_name_tag = tr_tag.find('a', href=re.compile(r'/room/profile\?room_id='))
             event_name_tag = tr_tag.find('a', href=re.compile(r'/event/'))
@@ -185,15 +174,14 @@ def approve_entry(session, approval_data):
         'event_id': approval_data['event_id'],
     }
     
-    # Ajaxリクエストと日本語設定を強制するためのヘッダー
     headers = {
         'Referer': ORGANIZER_ADMIN_URL, 
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-        'X-Requested-With': 'XMLHttpRequest', # Ajaxリクエストのフラグ
+        'X-Requested-With': 'XMLHttpRequest', 
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate, br',
-        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8', # 🚨 日本語設定を確実に送信
+        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8', 
     }
     
     st.info(f"承認リクエスト送信中: ルーム名: {approval_data['room_name']}")
@@ -202,7 +190,6 @@ def approve_entry(session, approval_data):
         r = session.post(APPROVE_ENDPOINT, data=payload, headers=headers, allow_redirects=True)
         r.raise_for_status()
 
-        # 承認成功の判定ロジック: リダイレクト先またはPOSTエンドポイント自体に留まった場合を成功とする
         if ORGANIZER_ADMIN_URL in r.url or ORGANIZER_TOP_URL in r.url or APPROVE_ENDPOINT in r.url:
              st.success(f"✅ 承認成功: ルームID {approval_data['room_id']} / イベントID {approval_data['event_id']}")
              return True
@@ -223,8 +210,14 @@ def main():
     st.markdown("⚠️ **注意**: このツールは、**Secretsに設定されたCookieが有効な間のみ**動作します。")
     st.markdown("---")
     
+    # 承認状態を保持
     if 'is_running' not in st.session_state:
         st.session_state.is_running = False
+    
+    # 矛盾ログの原因となり得る前回承認データを初期化
+    if 'last_approved_entry' not in st.session_state:
+        st.session_state.last_approved_entry = None
+
 
     col1, col2 = st.columns([1, 1])
     
@@ -257,30 +250,34 @@ def main():
             
             with placeholder.container():
                 st.markdown(f"---")
-                # 🚨 修正済み: 日本時間 (JST) で日時を表示
                 now_jst = datetime.datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')
                 st.markdown(f"**最終チェック日時**: {now_jst}")
                 
                 # 未承認イベントのリストを取得
                 pending_entries = find_pending_approvals(session)
+                num_pending = len(pending_entries) # 件数を取得
                 
                 # 承認処理ブロック: リストが空でない場合のみ実行
-                if pending_entries:
-                    st.header(f"{len(pending_entries)}件の承認処理を開始...")
+                if num_pending > 0:
+                    st.warning(f"🚨 {num_pending} 件の未承認イベント参加申請が見つかりました。")
+                    st.header(f"{num_pending}件の承認処理を開始...")
                     
                     entries_to_process = list(pending_entries)
                     
                     for entry in entries_to_process:
-                        # 承認処理
                         if approve_entry(session, entry):
                             approved_count += 1
                         
                         time.sleep(3) # 連続リクエストを避けるための待機
 
                     st.success(f"✅ 今回のチェックで **{approved_count} 件** のイベント参加を承認しました。")
+                    
+                    # 矛盾ログ対策: 最後に承認したデータをセッションに保存（今回のバグ修正の直接的な効果はないが、環境対策）
+                    if approved_count > 0:
+                         st.session_state.last_approved_entry = entries_to_process[-1]
                 else:
                     st.info("未承認イベントはありませんでした。")
-                    # approved_count は 0 のまま
+                    # 承認処理が実行されないため、前回データが誤って表示されることも防げるはず
 
             
             # 次のチェックまでの待機時間計算
