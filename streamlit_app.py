@@ -20,7 +20,7 @@ BASE_URL = "https://www.showroom-live.com"
 ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer" 
 ORGANIZER_TOP_URL = f"{BASE_URL}/organizer" 
 APPROVE_ENDPOINT = f"{BASE_URL}/event/organizer_approve"
-CHECK_INTERVAL_SECONDS = 300  
+CHECK_INTERVAL_SECONDS = 30  # 5分間隔でチェック
 
 # JSTタイムゾーン定義
 JST = datetime.timezone(datetime.timedelta(hours=9), 'JST') 
@@ -112,7 +112,7 @@ def verify_session_and_get_csrf_token(session):
 
 def find_pending_approvals(session):
     """未承認のイベント参加申請を管理ページから抽出し、リストを返します。"""
-    st.info("申請イベントの確認ページにアクセスし、未承認イベントを探します...") # ログは残す
+    st.info("申請イベントの確認ページにアクセスし、未承認イベントを探します...") 
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
@@ -135,10 +135,7 @@ def find_pending_approvals(session):
     approval_forms = soup.find_all('form', {'action': '/event/organizer_approve'})
     
     if not approval_forms:
-        # st.info("未承認のイベント参加申請は見つかりませんでした。") # ログはメイン関数に任せる
         return []
-
-    # st.warning(f"🚨 {len(approval_forms)} 件の未承認イベント参加申請が見つかりました。") # ログはメイン関数に任せる
 
     for form in approval_forms:
         try:
@@ -214,11 +211,6 @@ def main():
     if 'is_running' not in st.session_state:
         st.session_state.is_running = False
     
-    # 矛盾ログの原因となり得る前回承認データを初期化
-    if 'last_approved_entry' not in st.session_state:
-        st.session_state.last_approved_entry = None
-
-
     col1, col2 = st.columns([1, 1])
     
     if not st.session_state.is_running:
@@ -242,20 +234,22 @@ def main():
             st.session_state.is_running = False
             return
 
-        placeholder = st.empty()
+        # 🚨 修正: 承認チェック結果のログを上書きするためのプレースホルダー
+        log_placeholder = st.empty() 
         
         while st.session_state.is_running:
             start_time = time.time()
             approved_count = 0
             
-            with placeholder.container():
+            # 🚨 修正: ループのたびに前回のチェック結果ログをクリアして、新しいログに置き換える
+            with log_placeholder.container():
                 st.markdown(f"---")
                 now_jst = datetime.datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')
                 st.markdown(f"**最終チェック日時**: {now_jst}")
                 
                 # 未承認イベントのリストを取得
                 pending_entries = find_pending_approvals(session)
-                num_pending = len(pending_entries) # 件数を取得
+                num_pending = len(pending_entries) 
                 
                 # 承認処理ブロック: リストが空でない場合のみ実行
                 if num_pending > 0:
@@ -268,19 +262,14 @@ def main():
                         if approve_entry(session, entry):
                             approved_count += 1
                         
-                        time.sleep(3) # 連続リクエストを避けるための待機
+                        time.sleep(3) 
 
                     st.success(f"✅ 今回のチェックで **{approved_count} 件** のイベント参加を承認しました。")
-                    
-                    # 矛盾ログ対策: 最後に承認したデータをセッションに保存（今回のバグ修正の直接的な効果はないが、環境対策）
-                    if approved_count > 0:
-                         st.session_state.last_approved_entry = entries_to_process[-1]
                 else:
                     st.info("未承認イベントはありませんでした。")
-                    # 承認処理が実行されないため、前回データが誤って表示されることも防げるはず
-
+                    
             
-            # 次のチェックまでの待機時間計算
+            # 次のチェックまでの待機時間計算 (log_placeholderの外で表示し、待機ログは残す)
             elapsed_time = time.time() - start_time
             wait_time = max(0, CHECK_INTERVAL_SECONDS - elapsed_time)
             
