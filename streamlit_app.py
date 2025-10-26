@@ -207,7 +207,7 @@ def main():
     st.set_page_config(
         page_title="SHOWROOM イベント参加申請 自動承認",
         page_icon="🚨",
-        layout="wide"
+        layout=""
     )
     st.markdown(
         "<h1 style='font-size:28px; text-align:center; color:#1f2937;'>🚨 SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)</h1>",
