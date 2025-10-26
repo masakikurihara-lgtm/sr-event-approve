@@ -203,7 +203,11 @@ def approve_entry(session, approval_data):
 # ==============================================================================
 
 def main():
-    st.title("SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)")
+    st.markdown(
+        "<h1 style='font-size:28px; text-align:center; color:#1f2937;'>🚨 SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)</h1>",
+        unsafe_allow_html=True
+    )
+    #st.title("SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)")
     st.markdown("⚠️ **注意**: このツールは、**Secretsに設定されたCookieが有効な間のみ**動作します。")
     st.markdown("---")
     
