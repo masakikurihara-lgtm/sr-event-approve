@@ -208,6 +208,10 @@ def main():
         unsafe_allow_html=True
     )
     #st.title("SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)")
+        st.markdown(
+        "<h1 style='font-size:16px; text-align:center; color:#1f2937;'>⚠️ **注意**: このツールは、**Secretsに設定されたCookieが有効な間のみ**動作します。</h1>",
+        unsafe_allow_html=True
+    )
     st.markdown("⚠️ **注意**: このツールは、**Secretsに設定されたCookieが有効な間のみ**動作します。")
     st.markdown("---")
     
