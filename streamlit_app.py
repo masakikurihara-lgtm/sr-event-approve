@@ -3,7 +3,10 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
-import datetime 
+import datetime
+# 🚨 追加: メール送信に必要なライブラリ
+import smtplib 
+from email.message import EmailMessage 
 
 # ==============================================================================
 # ----------------- 設定 -----------------
@@ -11,10 +14,19 @@ import datetime
 
 try:
     AUTH_COOKIE_STRING = st.secrets["showroom"]["auth_cookie_string"]
-except KeyError:
-    st.error("🚨 Streamlit Secretsの設定ファイル (.streamlit/secrets.toml) に 'showroom'セクション、または 'auth_cookie_string' が見つかりません。")
-    st.error("ログイン済みのブラウザからCookieを取得し、設定してください。")
+    # 🚨 追加: メール設定の読み込み
+    EMAIL_USER = st.secrets["email"]["smtp_user"]
+    EMAIL_PASS = st.secrets["email"]["smtp_password"]
+    EMAIL_TO = st.secrets["email"]["to_email"]
+    SMTP_SERVER = st.secrets["email"]["smtp_server"]
+    SMTP_PORT = st.secrets["email"]["smtp_port"]
+    
+except KeyError as e:
+    st.error(f"🚨 Streamlit Secretsの設定ファイルに不足があります: {e}")
+    st.error("設定ファイルに 'showroom' および 'email' セクションが正しく設定されているか確認してください。")
+    st.error("新しいCookieを取得し、設定してください。")
     st.stop()
+
 
 BASE_URL = "https://www.showroom-live.com"
 ORGANIZER_ADMIN_URL = f"{BASE_URL}/event/admin_organizer" 
@@ -24,6 +36,33 @@ CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック
 
 # JSTタイムゾーン定義
 JST = datetime.timezone(datetime.timedelta(hours=9), 'JST') 
+
+# ==============================================================================
+# ----------------- メール通知関数 (新規追加) -----------------
+# ==============================================================================
+
+def send_alert_email(subject, body):
+    """SMTPを使用してメールを送信する"""
+    try:
+        msg = EmailMessage()
+        msg.set_content(body)
+        msg['Subject'] = subject
+        msg['From'] = EMAIL_USER
+        msg['To'] = EMAIL_TO
+
+        # Gmail/TLSを使用 (SMTP_PORT=587)
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+            
+        st.error(f"🚨 【メール送信成功】: {subject} のアラートを {EMAIL_TO} に送信しました。")
+        return True
+    except Exception as e:
+        # メール送信失敗はツールの動作に直接影響しないため、エラーメッセージのみ表示
+        st.error(f"🚨 【メール送信失敗】: SMTPエラーが発生しました。メール設定を確認してください。エラー: {e}")
+        return False
+
 
 # ==============================================================================
 # ----------------- セッション構築関数 -----------------
@@ -45,9 +84,9 @@ def create_authenticated_session(cookie_string):
         cookies_dict['i18n_redirected'] = 'ja'
         
         if not cookies_dict:
-             st.error("🚨 Cookie文字列から有効なCookieを解析できませんでした。")
-             return None
-             
+            st.error("🚨 Cookie文字列から有効なCookieを解析できませんでした。")
+            return None
+            
         session.cookies.update(cookies_dict)
         return session
         
@@ -56,7 +95,7 @@ def create_authenticated_session(cookie_string):
         return None
 
 # ==============================================================================
-# ----------------- セッション検証関数 -----------------
+# ----------------- セッション検証関数 (修正あり) -----------------
 # ==============================================================================
 
 def verify_session_and_get_csrf_token(session):
@@ -100,6 +139,16 @@ def verify_session_and_get_csrf_token(session):
         return session, csrf_token
     else:
         if "ログイン" in r.text or "会員登録" in r.text or "サインイン" in r.text:
+            # 🚨 修正: 認証切れを検出した場合にメールを送信
+            subject = "【🚨至急🚨】SHOWROOM自動承認ツール 認証切れアラート"
+            body = (
+                f"自動承認ツールが認証切れを検出したため、停止しました。\n"
+                f"日時: {datetime.datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')} (JST)\n\n"
+                f"新しいCookieを取得し、Secrets設定を更新してください。\n"
+                f"管理ページURL: {ORGANIZER_ADMIN_URL}"
+            )
+            send_alert_email(subject, body) # メール送信関数を呼び出し
+            
             st.error("🚨 Cookieが期限切れです。管理ページの内容がログインページのものと判定されました。新しいCookieを取得してください。")
             return None, None
             
@@ -188,8 +237,8 @@ def approve_entry(session, approval_data):
         r.raise_for_status()
 
         if ORGANIZER_ADMIN_URL in r.url or ORGANIZER_TOP_URL in r.url or APPROVE_ENDPOINT in r.url:
-             st.success(f"✅ 承認成功: ルームID {approval_data['room_id']} / イベントID {approval_data['event_id']}")
-             return True
+            st.success(f"✅ 承認成功: ルームID {approval_data['room_id']} / イベントID {approval_data['event_id']}")
+            return True
         else:
             st.error(f"承認リクエストは成功しましたが、リダイレクト先が予期しないページでした: {r.url}")
             return False
