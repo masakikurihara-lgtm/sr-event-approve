@@ -38,7 +38,7 @@ CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック
 JST = datetime.timezone(datetime.timedelta(hours=9), 'JST') 
 
 # ==============================================================================
-# ----------------- メール通知関数 -----------------
+# ----------------- メール通知関数 (新規追加) -----------------
 # ==============================================================================
 
 def send_alert_email(subject, body):
@@ -53,7 +53,6 @@ def send_alert_email(subject, body):
         # Gmail/TLSを使用 (SMTP_PORT=587)
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
-            # 🚨 認証部分でエラーが発生しやすい
             server.login(EMAIL_USER, EMAIL_PASS) 
             server.send_message(msg)
             
@@ -69,7 +68,7 @@ def send_alert_email(subject, body):
         # その他の接続・通信エラー
         st.error(f"🚨 【メール送信失敗】: SMTP接続/通信エラーが発生しました。")
         st.error(f"👉 **エラー詳細**: {type(e).__name__} / {e}")
-        st.error("👉 **原因**: ファイアウォール、またはSMTPサーバー、ポート設定が間違っている可能性があります。")
+        st.error("👉 **原因**: SMTPサーバー、ポート設定、またはネットワークの問題の可能性があります。")
         return False
 
 
@@ -104,7 +103,7 @@ def create_authenticated_session(cookie_string):
         return None
 
 # ==============================================================================
-# ----------------- セッション検証関数 (修正あり) -----------------
+# ----------------- セッション検証関数 (修正済み) -----------------
 # ==============================================================================
 
 def verify_session_and_get_csrf_token(session):
@@ -121,12 +120,35 @@ def verify_session_and_get_csrf_token(session):
     }
     
     try:
+        # 🚨 修正: r.raise_for_status() を使用せず、ステータスコードを直接チェックするためtryブロックを修正
         r = session.get(ORGANIZER_ADMIN_URL, headers=headers)
-        r.raise_for_status()
+        
     except requests.exceptions.RequestException as e:
-        st.error(f"管理ページへのアクセスに失敗しました。HTTPエラー: {e}")
+        # 接続レベルの深刻なエラー（DNS失敗、タイムアウトなど）
+        st.error(f"管理ページへのアクセスに深刻なエラーが発生しました。エラー: {e}")
         return None, None
 
+    # 🚨 修正: 400番台エラー（403 Forbiddenを含む）を検出した場合にメールを送信
+    if r.status_code in [401, 403]:
+        subject = "【🚨至急🚨】SHOWROOM自動承認ツール 認証切れアラート (HTTP 401/403)"
+        body = (
+            f"自動承認ツールが認証切れまたはアクセス拒否を検出したため、停止しました。\n"
+            f"HTTPステータスコード: {r.status_code}\n"
+            f"日時: {datetime.datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')} (JST)\n\n"
+            f"新しいCookieを取得し、Secrets設定を更新してください。\n"
+            f"管理ページURL: {ORGANIZER_ADMIN_URL}"
+        )
+        send_alert_email(subject, body)
+        
+        st.error(f"🚨 Cookieが期限切れです。アクセスが拒否されました (HTTP {r.status_code})。新しいCookieを取得してください。")
+        return None, None
+    
+    # 5xxエラー（サーバー側エラー）を検出
+    elif r.status_code >= 500:
+        st.error(f"管理ページへのアクセスに失敗しました。サーバーエラーです (HTTP {r.status_code})。")
+        return None, None
+        
+    # 200 OK の場合（通常処理）
     soup = BeautifulSoup(r.text, 'html.parser')
     
     csrf_token = None
@@ -147,16 +169,16 @@ def verify_session_and_get_csrf_token(session):
         st.success("✅ 認証済みセッションが有効です。承認用CSRFトークンを取得しました。")
         return session, csrf_token
     else:
+        # 既存のロジック: 200 OKだがCSRFトークンがなく、かつログインページの内容が返された場合
         if "ログイン" in r.text or "会員登録" in r.text or "サインイン" in r.text:
-            # 🚨 修正: 認証切れを検出した場合にメールを送信
-            subject = "【🚨至急🚨】SHOWROOM自動承認ツール 認証切れアラート"
+            subject = "【🚨至急🚨】SHOWROOM自動承認ツール 認証切れアラート (ログインページ検出)"
             body = (
                 f"自動承認ツールが認証切れを検出したため、停止しました。\n"
                 f"日時: {datetime.datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')} (JST)\n\n"
                 f"新しいCookieを取得し、Secrets設定を更新してください。\n"
                 f"管理ページURL: {ORGANIZER_ADMIN_URL}"
             )
-            send_alert_email(subject, body) # メール送信関数を呼び出し
+            send_alert_email(subject, body)
             
             st.error("🚨 Cookieが期限切れです。管理ページの内容がログインページのものと判定されました。新しいCookieを取得してください。")
             return None, None
@@ -264,17 +286,13 @@ def main():
     # ページ設定
     st.set_page_config(
         page_title="SHOWROOM イベント参加申請 自動承認",
-        #page_icon="🚨",
         page_icon="🚨"
-        #layout="wide"
     )
     st.markdown(
         "<h1 style='font-size:28px; text-align:center; color:#1f2937;'>🚨 SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)</h1>",
         unsafe_allow_html=True
     )
-    #st.title("SHOWROOM イベント参加申請 自動承認ツール (Cookie認証版)")
     st.markdown("<p style='text-align: center;'>⚠️ <b>注意</b>: このツールは、<b>Secretsに設定されたCookieが有効な間のみ</b>動作します。</p>", unsafe_allow_html=True)
-    #st.markdown("⚠️ **注意**: このツールは、**Secretsに設定されたCookieが有効な間のみ**動作します。")
     st.markdown("---")
     
     # 承認状態を保持
@@ -300,6 +318,7 @@ def main():
         
         valid_session, initial_csrf_token = verify_session_and_get_csrf_token(session)
         
+        # 認証が無効な場合は停止し、メールが送信される (verify_session_and_get_csrf_token内で処理済み)
         if not valid_session:
             st.session_state.is_running = False
             return
