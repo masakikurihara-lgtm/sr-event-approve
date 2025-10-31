@@ -38,7 +38,7 @@ CHECK_INTERVAL_SECONDS = 300  # 5分間隔でチェック
 JST = datetime.timezone(datetime.timedelta(hours=9), 'JST') 
 
 # ==============================================================================
-# ----------------- メール通知関数 (新規追加) -----------------
+# ----------------- メール通知関数 -----------------
 # ==============================================================================
 
 def send_alert_email(subject, body):
@@ -53,14 +53,23 @@ def send_alert_email(subject, body):
         # Gmail/TLSを使用 (SMTP_PORT=587)
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
-            server.login(EMAIL_USER, EMAIL_PASS)
+            # 🚨 認証部分でエラーが発生しやすい
+            server.login(EMAIL_USER, EMAIL_PASS) 
             server.send_message(msg)
             
         st.error(f"🚨 【メール送信成功】: {subject} のアラートを {EMAIL_TO} に送信しました。")
         return True
+        
+    except smtplib.SMTPAuthenticationError:
+        st.error("🚨 【メール送信失敗】: SMTP認証エラーが発生しました。")
+        st.error("👉 **原因**: 設定された「smtp_user」または「smtp_password」(16桁のアプリパスワード)が間違っている可能性が高いです。Secretsの内容を再確認してください。")
+        return False
+        
     except Exception as e:
-        # メール送信失敗はツールの動作に直接影響しないため、エラーメッセージのみ表示
-        st.error(f"🚨 【メール送信失敗】: SMTPエラーが発生しました。メール設定を確認してください。エラー: {e}")
+        # その他の接続・通信エラー
+        st.error(f"🚨 【メール送信失敗】: SMTP接続/通信エラーが発生しました。")
+        st.error(f"👉 **エラー詳細**: {type(e).__name__} / {e}")
+        st.error("👉 **原因**: ファイアウォール、またはSMTPサーバー、ポート設定が間違っている可能性があります。")
         return False
 
 
